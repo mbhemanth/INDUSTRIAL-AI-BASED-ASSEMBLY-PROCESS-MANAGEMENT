@@ -39,6 +39,19 @@ class SequenceChecker:
         self.end_time = None
 
         self.completed = False
+        # -----------------------------
+        # NG Detection
+        # -----------------------------
+
+        self.ng_timer = None
+
+        self.ng_detected = False
+
+        self.ng_message = ""
+
+        self.current_wrong_step = None
+
+        self.ng_hold_time = 2.0
 
     # ----------------------------------------
     # Load Positions
@@ -76,12 +89,13 @@ class SequenceChecker:
     # Update Sequence
     # ----------------------------------------
 
+    
     def update(self, glove_center):
 
         if self.completed:
             return
 
-        # No calibration yet
+        # Check calibration
         if len(self.positions) < 6:
             self.status = "Please Calibrate First"
             return
@@ -91,30 +105,33 @@ class SequenceChecker:
 
         expected = self.order[self.current_step]
 
-        if expected not in self.positions:
-            self.status = "Missing Calibration"
-            return
-
-        target = self.positions[expected]
-
-        target_center = (
-            target["x"],
-            target["y"]
+        expected_center = (
+            self.positions[expected]["x"],
+            self.positions[expected]["y"]
         )
 
-        dist = self.distance(
+        # ----------------------------------------
+        # CORRECT BOLT
+        # ----------------------------------------
+
+        expected_dist = self.distance(
             glove_center,
-            target_center
+            expected_center
         )
 
-        if dist <= self.radius:
+        if expected_dist <= self.radius:
+
+            # Clear NG
+            self.ng_detected = False
+            self.ng_timer = None
+            self.current_wrong_step = None
 
             if self.hold_start is None:
                 self.hold_start = time.time()
 
             elapsed = time.time() - self.hold_start
 
-            self.status = f"Hold {max(0,self.hold_time-elapsed):.1f}s"
+            self.status = f"Hold {max(0, self.hold_time-elapsed):.1f}s"
 
             if elapsed >= self.hold_time:
 
@@ -125,24 +142,103 @@ class SequenceChecker:
                 if self.current_step >= len(self.order):
 
                     self.completed = True
-
                     self.end_time = time.time()
-
                     self.status = "ASSEMBLY COMPLETED"
 
                 else:
 
                     self.status = f"{expected} Completed"
 
+            return
+
         else:
 
             self.hold_start = None
 
+        # ----------------------------------------
+        # FIND WRONG BOLT
+        # ----------------------------------------
+
+        wrong_bolt = None
+
+        for index, bolt in enumerate(self.order):
+
+        # Ignore completed bolts
+            if index < self.current_step:
+                continue
+
+            # Ignore expected bolt
+            if bolt == expected:
+                continue
+
+            center = (
+                self.positions[bolt]["x"],
+                self.positions[bolt]["y"]
+            )
+
+            dist = self.distance(
+                glove_center,
+                center
+            )
+
+            if dist <= self.radius:
+
+                wrong_bolt = bolt
+                break
+
+        # ----------------------------------------
+        # NO WRONG BOLT
+        # ----------------------------------------
+
+        if wrong_bolt is None:
+
+            self.ng_timer = None
+            self.ng_detected = False
+            self.current_wrong_step = None
+
             self.status = f"Move to {expected}"
 
-    # ----------------------------------------
-    # Draw Regions
-    # ----------------------------------------
+            return
+
+        # ----------------------------------------
+        # ENTERED NEW WRONG BOLT
+        # ----------------------------------------
+
+        if self.current_wrong_step != wrong_bolt:
+
+            self.current_wrong_step = wrong_bolt
+
+            # Fresh timer every visit
+            self.ng_timer = time.time()
+
+            self.ng_detected = False
+
+            self.status = f"Move to {expected}"
+
+            return
+
+        # ----------------------------------------
+        # STILL INSIDE SAME WRONG BOLT
+        # ----------------------------------------
+
+        elapsed = time.time() - self.ng_timer
+
+        if elapsed >= self.ng_hold_time:
+
+            self.ng_detected = True
+
+            self.status = (
+                f"NG! Expected: {expected}   Current: {wrong_bolt}"
+            )
+
+        else:
+
+            self.ng_detected = False
+
+            self.status = f"Move to {expected}"
+        # ----------------------------------------
+        # Draw Regions
+        # ----------------------------------------
 
     def draw_regions(self, frame):
 
@@ -189,11 +285,11 @@ class SequenceChecker:
             cv2.putText(
                 frame,
                 name,
-                (x - 15, y - 45),
+                (x - 25, y - 60),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                1.5,
                 color,
-                2
+                4
             )
 
     # ----------------------------------------
@@ -245,6 +341,39 @@ class SequenceChecker:
             (255, 255, 255),
             2
         )
+        # -------------------------
+        # NG Notification
+        # -------------------------
+
+        if self.ng_detected:
+
+            cv2.rectangle(
+                frame,
+                (150,140),
+                (900,320),
+                (0,0,255),
+                -1
+            )
+
+            cv2.putText(
+                frame,
+                "NG - WRONG SEQUENCE",
+                (190,200),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.1,
+                (255,255,255),
+                3
+            )
+
+            cv2.putText(
+                frame,
+                self.ng_message,
+                (190,260),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (255,255,255),
+                2
+            )
 
         if self.completed:
 
